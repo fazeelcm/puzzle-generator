@@ -452,4 +452,4 @@ with st.expander("🔌 Test model connection"):
         except Exception as e:
             st.error(f"{type(e).__name__}: {e}")
 
-tab_play, tab_gloss, tab_progress 
+# Tabs are created here, before an
