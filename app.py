@@ -77,7 +77,9 @@ SYSTEM_PROMPT = (
     "You are a senior corporate finance lead and patient teacher who writes exam-quality, "
     "expert-level real-world puzzles for analysts working alongside AI tools. "
     "Design rigorous options where all distractors are highly plausible, sophisticated, and mimic real professional misjudgments "
-    "so the correct answer cannot be guessed easily by elimination."
+    "so the correct answer cannot be guessed easily by elimination. "
+    "CRITICAL FORMATTING RULE: Never insert newlines, spaces, or line breaks between individual characters or letters within your text fields. "
+    "Write all sentences as normal, continuous paragraphs. "
     "You output only one valid JSON object, with no markdown and no extra text."
 )
 
@@ -170,6 +172,18 @@ def render_error_with_recommendations(err_message):
         st.markdown(f"- {r}")
 
 
+def clean_text(val):
+    """Sanitizes text fields to remove any accidental character-splitting or stray newlines."""
+    if isinstance(val, list):
+        val = "".join(str(x) for x in val)
+    if not isinstance(val, str):
+        val = str(val)
+    # Remove excessive newlines inside words/sentences caused by model tokenization glitches
+    val = re.sub(r'(?<=\w)\n(?=\w)', '', val)
+    val = re.sub(r'[ \t]+', ' ', val)
+    return val.strip()
+
+
 def parse_json(text):
     text = re.sub(r"```(?:json)?", "", text)
     start, end = text.find("{"), text.rfind("}") + 1
@@ -216,13 +230,20 @@ def distinct(v, others):
 
 # ---------------- Puzzle building ----------------
 def build_mc(raw, meta):
-    options = [str(o) for o in raw["options"]]
+    options = [clean_text(o) for o in raw["options"]]
     idx = int(raw["answer_index"])
     if len(options) != 4 or not 0 <= idx <= 3:
         raise ValueError("Multiple-choice puzzle must have 4 options and a valid answer_index")
-    return {**meta, "type": "mc", "question": raw["question"], "options": options,
-            "answer_index": idx, "explanation": raw["explanation"],
-            "tip": raw.get("tip", ""), "verified": False}
+    return {
+        **meta, 
+        "type": "mc", 
+        "question": clean_text(raw["question"]), 
+        "options": options,
+        "answer_index": idx, 
+        "explanation": clean_text(raw["explanation"]),
+        "tip": clean_text(raw.get("tip", "")), 
+        "verified": False
+    }
 
 
 def build_calc(raw, meta):
@@ -231,7 +252,7 @@ def build_calc(raw, meta):
     if abs(correct - to_number(raw["answer"])) > max(0.01, 0.005 * abs(correct)):
         raise ValueError(f"Arithmetic check failed: formula evaluates to {correct:,.2f}, but your stated answer was {raw['answer']}.")
 
-    unit = raw.get("unit", "")
+    unit = clean_text(raw.get("unit", ""))
     pool = [(correct, True)]
     for f in raw.get("mistake_formulas", []):
         try:
@@ -240,7 +261,6 @@ def build_calc(raw, meta):
             continue
         if len(pool) < 4 and distinct(v, [x for x, _ in pool]):
             pool.append((v, False))
-    # Tighter perturbation multipliers (e.g., 3% to 7% margins) so calculation options are much harder to guess
     for m in (1.03, 0.97, 1.06, 0.94):
         if len(pool) >= 4:
             break
@@ -253,10 +273,17 @@ def build_calc(raw, meta):
     random.shuffle(pool)
     options = [f"{v:,.2f} {unit}".strip() for v, _ in pool]
     idx = next(i for i, (_, ok) in enumerate(pool) if ok)
-    explanation = f"{raw['explanation']}\n\nFormula: `{raw['formula']}` with inputs {raw['inputs']}."
-    return {**meta, "type": "calc", "question": raw["question"], "options": options,
-            "answer_index": idx, "explanation": explanation,
-            "tip": raw.get("tip", ""), "verified": True}
+    explanation = f"{clean_text(raw['explanation'])}\n\nFormula: `{raw['formula']}` with inputs {raw['inputs']}."
+    return {
+        **meta, 
+        "type": "calc", 
+        "question": clean_text(raw["question"]), 
+        "options": options,
+        "answer_index": idx, 
+        "explanation": explanation,
+        "tip": clean_text(raw.get("tip", "")), 
+        "verified": True
+    }
 
 
 def build_prompt(fmt, topic, difficulty, avoid):
@@ -306,12 +333,19 @@ def generate_puzzle_with_self_correction(client, model, fmt, topic, difficulty, 
                 raise ValueError("The model returned an empty response. Check if your API Key matches the selected model.")
             
             raw = parse_json(text)
-            key_terms = [t for t in raw.get("key_terms", []) if isinstance(t, dict) and t.get("term")]
+            key_terms = [
+                {"term": clean_text(t.get("term", "")), "meaning": clean_text(t.get("meaning", ""))} 
+                for t in raw.get("key_terms", []) if isinstance(t, dict) and t.get("term")
+            ]
             meta = {
-                "topic": topic, "area": TOPIC_AREA[topic], "format": fmt, "difficulty": difficulty, "model": model,
-                "market_behaviour": raw.get("market_behaviour", ""),
-                "real_life": raw.get("real_life_connection", ""),
-                "reflection": raw.get("reflection", ""),
+                "topic": topic, 
+                "area": TOPIC_AREA[topic], 
+                "format": fmt, 
+                "difficulty": difficulty, 
+                "model": model,
+                "market_behaviour": clean_text(raw.get("market_behaviour", "")),
+                "real_life": clean_text(raw.get("real_life_connection", "")),
+                "reflection": clean_text(raw.get("reflection", "")),
                 "key_terms": key_terms,
             }
             if raw.get("type") == "calc" or fmt == "Calculation":
@@ -601,7 +635,7 @@ with tab_play:
                             ],
                             temperature=0.7,
                         )
-                        st.session_state.explanations[pid] = resp_dd.choices[0].message.content
+                        st.session_state.explanations[pid] = clean_text(resp_dd.choices[0].message.content)
                         st.rerun()
                     except Exception as e:
                         render_error_with_recommendations(str(e))
@@ -666,4 +700,4 @@ with tab_progress:
         "**Explain the story.** For every variance, write one sentence on the business driver, not just the number. "
         "**Stress-test the forecast.** Ask what happens to the answer if interest rates, FX or input costs move. "
         "**Keep the audit trail.** Note which model, data source and assumption produced each conclusion."
-    )
+            )
