@@ -134,18 +134,6 @@ def get_client(provider, base_url, api_key):
     return OpenAI(base_url=base_url or None, api_key=key, timeout=60.0, max_retries=1)
 
 
-def ask_llm(client, model, system, user):
-    resp = client.chat.completions.create(
-        model=model,
-        messages=[{"role": "system", "content": system}, {"role": "user", "content": user}],
-        temperature=0.7,
-    )
-    text = resp.choices[0].message.content if resp.choices else ""
-    if not text or not text.strip():
-        raise ValueError("The model returned an empty response. Check your model name or API credentials.")
-    return text
-
-
 def parse_json(text):
     text = re.sub(r"```(?:json)?", "", text)
     start, end = text.find("{"), text.rfind("}") + 1
@@ -205,7 +193,7 @@ def build_calc(raw, meta):
     names = {k: to_number(v) for k, v in raw["inputs"].items()}
     correct = safe_eval(raw["formula"], names)
     if abs(correct - to_number(raw["answer"])) > max(0.01, 0.005 * abs(correct)):
-        raise ValueError(f"Arithmetic check failed: formula gives {correct:,.2f}")
+        raise ValueError(f"Arithmetic check failed: formula evaluates to {correct:,.2f}, but your stated answer was {raw['answer']}.")
 
     unit = raw.get("unit", "")
     pool = [(correct, True)]
@@ -223,7 +211,7 @@ def build_calc(raw, meta):
         if distinct(v, [x for x, _ in pool]):
             pool.append((v, False))
     if len(pool) != 4:
-        raise ValueError("Could not build four distinct options")
+        raise ValueError("Could not build four distinct options from the formula and mistake formulas.")
 
     random.shuffle(pool)
     options = [f"{v:,.2f} {unit}".strip() for v, _ in pool]
@@ -259,19 +247,68 @@ Rules:
 Return ONLY one JSON object."""
 
 
-def generate_puzzle(client, model, fmt, topic, difficulty, avoid):
-    raw = parse_json(ask_llm(client, model, SYSTEM_PROMPT, build_prompt(fmt, topic, difficulty, avoid)))
-    key_terms = [t for t in raw.get("key_terms", []) if isinstance(t, dict) and t.get("term")]
-    meta = {
-        "topic": topic, "area": TOPIC_AREA[topic], "format": fmt, "difficulty": difficulty, "model": model,
-        "market_behaviour": raw.get("market_behaviour", ""),
-        "real_life": raw.get("real_life_connection", ""),
-        "reflection": raw.get("reflection", ""),
-        "key_terms": key_terms,
-    }
-    if raw.get("type") == "calc" or fmt == "Calculation":
-        return build_calc(raw, meta)
-    return build_mc(raw, meta)
+def generate_puzzle_with_self_correction(client, model, fmt, topic, difficulty, avoid):
+    """
+    Attempts to generate a valid puzzle up to 3 times. If an error occurs (such as an arithmetic 
+    mismatch or JSON syntax error), it feeds the exact error message back into the conversation 
+    prompt so the AI can correct its mistake.
+    """
+    base_user_prompt = build_prompt(fmt, topic, difficulty, avoid)
+    messages = [
+        {"role": "system", "content": SYSTEM_PROMPT},
+        {"role": "user", "content": base_user_prompt}
+    ]
+    
+    errors = []
+    for attempt in range(1, 4):
+        st.write(f"🔄 **Attempt {attempt} of 3:** Sending request to `{model}`...")
+        try:
+            resp = client.chat.completions.create(
+                model=model,
+                messages=messages,
+                temperature=0.7,
+            )
+            text = resp.choices[0].message.content if resp.choices else ""
+            if not text or not text.strip():
+                raise ValueError("The model returned an empty response.")
+            
+            raw = parse_json(text)
+            key_terms = [t for t in raw.get("key_terms", []) if isinstance(t, dict) and t.get("term")]
+            meta = {
+                "topic": topic, "area": TOPIC_AREA[topic], "format": fmt, "difficulty": difficulty, "model": model,
+                "market_behaviour": raw.get("market_behaviour", ""),
+                "real_life": raw.get("real_life_connection", ""),
+                "reflection": raw.get("reflection", ""),
+                "key_terms": key_terms,
+            }
+            if raw.get("type") == "calc" or fmt == "Calculation":
+                puzzle = build_calc(raw, meta)
+            else:
+                puzzle = build_mc(raw, meta)
+            
+            st.write(f"✅ Attempt {attempt} validated successfully!")
+            return puzzle
+            
+        except Exception as e:
+            err_msg = f"❌ Attempt {attempt} failed: {type(e).__name__}: {e}"
+            errors.append(err_msg)
+            st.warning(err_msg)
+            
+            # If we have attempts left, append assistant output and corrective feedback to messages
+            if attempt < 3:
+                st.info(f"🛠️ Informing AI about the error and requesting correction...")
+                messages.append({"role": "assistant", "content": text if 'text' in locals() and text else "{}"})
+                
+                correction_prompt = (
+                    f"Your previous output failed validation with the following error:\n"
+                    f"```\n{e}\n```\n"
+                    f"Please analyze this error carefully. If this was an arithmetic error, re-evaluate your formula and inputs "
+                    f"so that the mathematical result strictly matches your stated answer. If this was a JSON or formatting error, ensure "
+                    f"your response contains valid JSON with all required keys. Return ONLY the corrected JSON object."
+                )
+                messages.append({"role": "user", "content": correction_prompt})
+                
+    raise ValueError("Failed to generate a valid puzzle after 3 self-correction attempts:\n" + "\n".join(errors))
 
 
 # ---------------- Game state ----------------
@@ -416,191 +453,4 @@ with st.sidebar:
     correct = sum(v["correct"] for v in st.session_state.topic_stats.values())
     acc = round(100 * correct / total) if total else 0
     st.metric("Accuracy", f"{acc}%", f"{correct}/{total}")
-    for b in badges():
-        st.write(b)
-
-    with st.expander("📤 Share your score"):
-        st.code(f"{APP_NAME}: Level {level}, {correct}/{total} correct ({acc}%), "
-                f"best streak {st.session_state.best_streak}")
-    if st.session_state.history:
-        buf = io.StringIO()
-        writer = csv.DictWriter(buf, fieldnames=list(st.session_state.history[0].keys()))
-        writer.writeheader()
-        writer.writerows(st.session_state.history)
-        st.download_button("⬇️ Download history (CSV)", buf.getvalue(),
-                           "puzzle_history.csv", "text/csv")
-
-st.title(f"📈 {APP_NAME}")
-st.caption("Practise the real workday of a corporate finance analyst in the AI era: "
-           "reconciliation, forecasting, scenario analysis, treasury, reporting and governance. "
-           "Calculation puzzles are verified in Python. Educational only, not investment advice.")
-
-client = get_client(provider, base_url, api_key)
-
-with st.expander("🔌 Test model connection"):
-    if st.button("Run connection test"):
-        try:
-            reply = ask_llm(client, model, "You are a helpful assistant.", "Reply with the single word OK.")
-            st.success(f"Connected. Model replied: {reply.strip()[:80]}")
-        except Exception as e:
-            st.error(f"Connection Error ({type(e).__name__}): {e}")
-
-tab_play, tab_gloss, tab_progress = st.tabs(["🎯 Practice", "📘 Glossary", "📈 Progress"])
-
-# ---- Practice tab ----
-with tab_play:
-    if st.button("🎲 New puzzle", type="primary", use_container_width=True):
-        topic = pick_topic(topic_choice, st.session_state.adaptive)
-        fmt = random.choice(FORMATS[1:]) if fmt_choice == "Random" else fmt_choice
-        puzzle, errors = None, []
-        
-        with st.status(f"Asking {model} for a {fmt.lower()} puzzle...", expanded=True) as status:
-            for attempt in range(1, 4):
-                st.write(f"Attempt {attempt} of 3...")
-                try:
-                    puzzle = generate_puzzle(client, model, fmt, topic, difficulty, st.session_state.seen)
-                    break
-                except Exception as e:
-                    err_msg = f"Attempt {attempt}: {type(e).__name__}: {e}"
-                    errors.append(err_msg)
-                    st.error(err_msg)
-            
-            if puzzle:
-                status.update(label="Puzzle ready", state="complete", expanded=False)
-            else:
-                status.update(label="Could not generate a puzzle", state="error", expanded=True)
-
-        if puzzle:
-            st.session_state.pid += 1
-            puzzle["id"] = st.session_state.pid
-            st.session_state.puzzle = puzzle
-            st.session_state.answered = False
-            st.session_state.start_time = time.time()
-            st.session_state.seen.append(puzzle["question"])
-            for t in puzzle.get("key_terms", []):
-                st.session_state.glossary[t["term"]] = t.get("meaning", "")
-        else:
-            st.error("No puzzle could be generated after 3 attempts. Review the error details above or check your API key / model name.")
-
-    p = st.session_state.puzzle
-    if p:
-        pid = p["id"]
-        answered = st.session_state.answered
-        badge = "✅ Verified by Python" if p["verified"] else "🤖 AI-checked"
-        st.caption(f"🏢 {p['area']} · {p['topic']} · {p['format']} · {p['difficulty']} · {badge} · "
-                   f"generated by `{p['model']}`")
-        st.markdown(f"### {p['question']}")
-
-        st.radio("Your answer", p["options"], index=None, key=f"choice_{pid}", disabled=answered)
-        if not answered:
-            if st.session_state.get("timed", False):
-                st.caption(f"⏱ {TIME_LIMIT}s limit, checked when you submit")
-            st.button("Submit answer", type="primary",
-                      disabled=st.session_state.get(f"choice_{pid}") is None,
-                      on_click=submit, args=(pid,))
-        else:
-            last = st.session_state.history[-1]
-            correct_text = p["options"][p["answer_index"]]
-            if last["timed_out"]:
-                st.warning(f"Time's up. The answer was: {correct_text}")
-            elif last["correct"]:
-                st.success(f"Correct! +{st.session_state.last_xp} XP")
-            else:
-                st.error(f"Not quite. The answer is: {correct_text}")
-
-            st.info(p["explanation"])
-            if p.get("tip"):
-                st.markdown(f"**💡 Analyst tip:** {p['tip']}")
-            if p.get("market_behaviour"):
-                st.markdown(f"**📰 Why the market or management moves:** {p['market_behaviour']}")
-            if p.get("real_life"):
-                st.markdown(f"**🏠 In real life:** {p['real_life']}")
-            if p.get("reflection"):
-                st.markdown(f"**🤔 Think about it:** {p['reflection']}")
-            st.markdown(f"**🧭 Skill practised:** {p['area']} → *{p['topic']}*")
-            if p.get("key_terms"):
-                with st.expander("🔑 Key terms in this puzzle"):
-                    for t in p["key_terms"]:
-                        st.markdown(f"**{t['term']}**: {t.get('meaning', '')}")
-
-            if pid in st.session_state.explanations:
-                st.markdown(st.session_state.explanations[pid])
-            elif st.button("🧠 Deep dive: how a pro analyst thinks about this"):
-                with st.spinner("Writing a deep dive..."):
-                    try:
-                        st.session_state.explanations[pid] = ask_llm(
-                            client, model,
-                            "You are a patient corporate finance mentor for analysts. Use simple words and explain jargon in brackets. "
-                            "Answer in this order, under 280 words: 1) the core concept in plain English; "
-                            "2) the step-by-step thinking a senior analyst would use when an AI tool raises this issue; "
-                            "3) what to verify before trusting or acting on the AI output; "
-                            "4) how the same idea applies to a personal money decision; "
-                            "5) two common mistakes analysts make and how to avoid them.",
-                            f"Workday area: {p['area']}\nPuzzle: {p['question']}\nCorrect answer: {correct_text}\n"
-                            f"Explanation: {p['explanation']}",
-                        )
-                        st.rerun()
-                    except Exception as e:
-                        st.error(f"Failed to generate deep dive ({type(e).__name__}): {e}")
-    else:
-        st.info("Pick your settings in the sidebar and press **New puzzle** to start.")
-
-# ---- Glossary tab ----
-with tab_gloss:
-    gloss = st.session_state.glossary
-    st.subheader("Your finance glossary")
-    if gloss:
-        st.caption(f"{len(gloss)} terms learned so far. Terms are added as you get new puzzles.")
-        query = st.text_input("Search terms", key="gloss_search").strip().lower()
-        for term in sorted(gloss):
-            if query and query not in term.lower() and query not in gloss[term].lower():
-                continue
-            st.markdown(f"**{term}**: {gloss[term]}")
-    else:
-        st.info("Your glossary fills up as you solve puzzles.")
-
-# ---- Progress tab ----
-with tab_progress:
-    st.subheader("Competency by workday area")
-    area_rows = {}
-    for area in WORK_AREAS:
-        s = area_stats(area)
-        if s["total"] > 0:
-            area_rows[area] = round(100 * s["correct"] / s["total"])
-    if area_rows:
-        df = pd.DataFrame({"Accuracy %": area_rows}).sort_values("Accuracy %")
-        st.bar_chart(df)
-    else:
-        st.info("Answer a few puzzles to see your accuracy by workday area.")
-
-    st.subheader("Skill checklist")
-    checklist = []
-    for area, topics in WORK_AREAS.items():
-        for t in topics:
-            s = st.session_state.topic_stats.get(t, {"correct": 0, "total": 0})
-            checklist.append({
-                "Area": area,
-                "Responsibility": t,
-                "Attempts": s["total"],
-                "Accuracy": f"{round(100 * s['correct'] / s['total'])}%" if s["total"] else "-",
-                "Status": competency_status(s),
-            })
-    st.dataframe(pd.DataFrame(checklist), use_container_width=True, hide_index=True)
-
-    st.subheader("Your study plan")
-    plan = study_plan()
-    if plan:
-        st.write("Focus on these responsibilities next. Each one maps to a real task on the analyst's desk:")
-        for acc_t, topic, n in plan:
-            st.markdown(f"- **{topic}** ({TOPIC_AREA[topic]}): {round(acc_t * 100)}% over {n} puzzles. "
-                        "Try Hard difficulty with the Best next action format on this topic.")
-    else:
-        st.info("After at least two puzzles in a responsibility, your weakest areas will appear here.")
-
-    st.subheader("Habits of a strong AI-era analyst")
-    st.markdown(
-        "**Verify before you trust.** Check any AI output against a source record before it reaches a CFO deck. "
-        "**Explain the story.** For every variance, write one sentence on the business driver, not just the number. "
-        "**Stress-test the forecast.** Ask what happens to the answer if interest rates, FX or input costs move. "
-        "**Keep the audit trail.** Note which model, data source and assumption produced each conclusion."
-        )
+    
