@@ -128,19 +128,25 @@ FORMAT_SPECS = {
 }
 FORMAT_SPECS = {k: v + AI_WORKPLACE_RULE + LEARNING_RULE for k, v in FORMAT_SPECS.items()}
 
+
 # ---------------- Model access (provider-agnostic) ----------------
 def get_client(provider, base_url, api_key):
     env_name = PROVIDERS[provider][1]
     key = api_key or (os.environ.get(env_name, "") if env_name else "") or "not-needed"
-    return OpenAI(base_url=base_url, api_key=key)
+    # timeout stops the spinner from hanging forever; max_retries=1 keeps failures fast
+    return OpenAI(base_url=base_url or None, api_key=key, timeout=60.0, max_retries=1)
 
 
 def ask_llm(client, model, system, user):
     resp = client.chat.completions.create(
         model=model,
         messages=[{"role": "system", "content": system}, {"role": "user", "content": user}],
+        temperature=0.7,
     )
-    return resp.choices[0].message.content or ""
+    text = resp.choices[0].message.content if resp.choices else ""
+    if not text or not text.strip():
+        raise ValueError("The model returned an empty response. Check the model name.")
+    return text
 
 
 def parse_json(text):
@@ -179,6 +185,13 @@ def safe_eval(expr, names):
     return ev(ast.parse(expr, mode="eval"))
 
 
+def to_number(v):
+    """Accept 8, 8.5, '8%', '$1,250' and similar values from the model."""
+    if isinstance(v, (int, float)):
+        return float(v)
+    return float(re.sub(r"[^0-9.\-]", "", str(v)))
+
+
 def distinct(v, others):
     return all(round(v, 2) != round(x, 2) for x in others)
 
@@ -195,9 +208,9 @@ def build_mc(raw, meta):
 
 
 def build_calc(raw, meta):
-    names = {k: float(v) for k, v in raw["inputs"].items()}
+    names = {k: to_number(v) for k, v in raw["inputs"].items()}
     correct = safe_eval(raw["formula"], names)
-    if abs(correct - float(raw["answer"])) > max(0.01, 0.005 * abs(correct)):
+    if abs(correct - to_number(raw["answer"])) > max(0.01, 0.005 * abs(correct)):
         raise ValueError(f"Arithmetic check failed: formula gives {correct:,.2f}")
 
     unit = raw.get("unit", "")
@@ -330,6 +343,16 @@ def submit(pid):
     })
 
 
+def area_stats(area):
+    correct = total = 0
+    for t in WORK_AREAS[area]:
+        s = st.session_state.topic_stats.get(t)
+        if s:
+            correct += s["correct"]
+            total += s["total"]
+    return {"correct": correct, "total": total}
+
+
 def badges():
     s = st.session_state
     out = []
@@ -348,16 +371,6 @@ def badges():
     if all(area_stats(a)["total"] >= 3 for a in WORK_AREAS):
         out.append("🧭 Full-day analyst (practised every workday area)")
     return out
-
-
-def area_stats(area):
-    correct = total = 0
-    for t in WORK_AREAS[area]:
-        s = st.session_state.topic_stats.get(t)
-        if s:
-            correct += s["correct"]
-            total += s["total"]
-    return {"correct": correct, "total": total}
 
 
 def competency_status(stats):
@@ -430,22 +443,13 @@ st.caption("Practise the real workday of a corporate finance analyst in the AI e
            "Calculation puzzles are verified in Python. Educational only, not investment advice.")
 
 client = get_client(provider, base_url, api_key)
-tab_play, tab_gloss, tab_progress = st.tabs(["🎯 Practice", "📘 Glossary", "📈 Progress"])
 
-# ---- Practice tab ----
-with tab_play:
-    if st.button("🎲 New puzzle", type="primary", use_container_width=True):
-        topic = pick_topic(topic_choice, st.session_state.adaptive)
-        fmt = random.choice(FORMATS[1:]) if fmt_choice == "Random" else fmt_choice
-        puzzle, last_err = None, None
-        with st.spinner(f"{model} is writing a {fmt.lower()} puzzle..."):
-            for _ in range(3):  # retry on malformed JSON or failed arithmetic checks
-                try:
-                    puzzle = generate_puzzle(client, model, fmt, topic, difficulty, st.session_state.seen)
-                    break
-                except Exception as e:
-                    last_err = e
-        if puzzle:
-            st.session_state.pid += 1
-            puzzle["id"] = st.session_state.pid
-            st.session_state.puzzl
+with st.expander("🔌 Test model connection"):
+    if st.button("Run connection test"):
+        try:
+            reply = ask_llm(client, model, "You are a helpful assistant.", "Reply with the single word OK.")
+            st.success(f"Connected. Model replied: {reply.strip()[:80]}")
+        except Exception as e:
+            st.error(f"{type(e).__name__}: {e}")
+
+tab_play, tab_gloss, tab_progress 
