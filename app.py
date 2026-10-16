@@ -14,6 +14,8 @@ import pandas as pd
 import streamlit as st
 from openai import OpenAI
 
+APP_NAME = "Puzzle Generator For Finance Analysts"
+
 # ---------------- Configuration ----------------
 # (base_url, env var for API key, default model). Edit freely.
 PROVIDERS = {
@@ -380,7 +382,7 @@ def study_plan():
 
 
 # ---------------- UI ----------------
-st.set_page_config(page_title="Analyst Arena", page_icon="📈", layout="centered")
+st.set_page_config(page_title=APP_NAME, page_icon="📈", layout="centered")
 init_state()
 
 with st.sidebar:
@@ -412,7 +414,7 @@ with st.sidebar:
         st.write(b)
 
     with st.expander("📤 Share your score"):
-        st.code(f"Analyst Arena: Level {level}, {correct}/{total} correct ({acc}%), "
+        st.code(f"{APP_NAME}: Level {level}, {correct}/{total} correct ({acc}%), "
                 f"best streak {st.session_state.best_streak}")
     if st.session_state.history:
         buf = io.StringIO()
@@ -420,9 +422,9 @@ with st.sidebar:
         writer.writeheader()
         writer.writerows(st.session_state.history)
         st.download_button("⬇️ Download history (CSV)", buf.getvalue(),
-                           "analyst_arena_history.csv", "text/csv")
+                           "puzzle_history.csv", "text/csv")
 
-st.title("📈 Analyst Arena")
+st.title(f"📈 {APP_NAME}")
 st.caption("Practise the real workday of a corporate finance analyst in the AI era: "
            "reconciliation, forecasting, scenario analysis, treasury, reporting and governance. "
            "Calculation puzzles are verified in Python. Educational only, not investment advice.")
@@ -446,5 +448,4 @@ with tab_play:
         if puzzle:
             st.session_state.pid += 1
             puzzle["id"] = st.session_state.pid
-            st.session_state.puzzle = puzzle
-            st.session
+            st.session_state.puzzl
