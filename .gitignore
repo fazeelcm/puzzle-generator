@@ -218,3 +218,14 @@ __marimo__/
 
 # Streamlit
 .streamlit/secrets.toml
+
+# Python cache and virtual environments
+__pycache__/
+*.pyc
+venv/
+.venv/
+
+# OS and editor files
+.DS_Store
+.vscode/
+.idea/
