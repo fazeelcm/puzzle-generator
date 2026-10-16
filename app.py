@@ -17,7 +17,6 @@ from openai import OpenAI
 APP_NAME = "Puzzle Generator For Finance Analysts"
 
 # ---------------- Configuration ----------------
-# (base_url, env var for API key, default model). Edit freely.
 PROVIDERS = {
     "OpenAI": ("https://api.openai.com/v1", "OPENAI_API_KEY", "gpt-4o-mini"),
     "Anthropic": ("https://api.anthropic.com/v1/", "ANTHROPIC_API_KEY", "claude-haiku-5-5"),
@@ -28,7 +27,6 @@ PROVIDERS = {
     "Custom endpoint": ("", None, ""),
 }
 
-# Every topic belongs to one workday area, mirroring a modern corporate finance analyst's role.
 WORK_AREAS = {
     "Morning: data validation & reconciliation": [
         "AI reconciliation exceptions (invoice mismatches, ledger variances)",
@@ -73,7 +71,7 @@ TOPICS = list(TOPIC_AREA)
 
 FORMATS = ["Random", "Calculation", "Concept", "Case study", "Spot the error", "Best next action"]
 DIFFICULTY_XP = {"Easy": 10, "Medium": 20, "Hard": 35}
-TIME_LIMIT = 45  # seconds, timed mode
+TIME_LIMIT = 45
 
 SYSTEM_PROMPT = (
     "You are a senior corporate finance lead and patient teacher who writes exam-quality, "
@@ -129,11 +127,10 @@ FORMAT_SPECS = {
 FORMAT_SPECS = {k: v + AI_WORKPLACE_RULE + LEARNING_RULE for k, v in FORMAT_SPECS.items()}
 
 
-# ---------------- Model access (provider-agnostic) ----------------
+# ---------------- Model access ----------------
 def get_client(provider, base_url, api_key):
     env_name = PROVIDERS[provider][1]
     key = api_key or (os.environ.get(env_name, "") if env_name else "") or "not-needed"
-    # timeout stops the spinner from hanging forever; max_retries=1 keeps failures fast
     return OpenAI(base_url=base_url or None, api_key=key, timeout=60.0, max_retries=1)
 
 
@@ -145,16 +142,15 @@ def ask_llm(client, model, system, user):
     )
     text = resp.choices[0].message.content if resp.choices else ""
     if not text or not text.strip():
-        raise ValueError("The model returned an empty response. Check the model name.")
+        raise ValueError("The model returned an empty response. Check your model name or API credentials.")
     return text
 
 
 def parse_json(text):
-    """Tolerant JSON extraction: works even when models wrap output in fences or prose."""
     text = re.sub(r"```(?:json)?", "", text)
     start, end = text.find("{"), text.rfind("}") + 1
     if start == -1 or end == 0:
-        raise ValueError("No JSON object found in model output")
+        raise ValueError(f"No JSON object found in model output:\n{text[:200]}...")
     return json.loads(text[start:end])
 
 
@@ -166,7 +162,6 @@ _OPS = {
 
 
 def safe_eval(expr, names):
-    """Evaluate arithmetic only: no function calls, no attributes, no imports."""
     def ev(node):
         if isinstance(node, ast.Expression):
             return ev(node.body)
@@ -186,7 +181,6 @@ def safe_eval(expr, names):
 
 
 def to_number(v):
-    """Accept 8, 8.5, '8%', '$1,250' and similar values from the model."""
     if isinstance(v, (int, float)):
         return float(v)
     return float(re.sub(r"[^0-9.\-]", "", str(v)))
@@ -215,14 +209,14 @@ def build_calc(raw, meta):
 
     unit = raw.get("unit", "")
     pool = [(correct, True)]
-    for f in raw.get("mistake_formulas", []):  # plausible wrong answers from common errors
+    for f in raw.get("mistake_formulas", []):
         try:
             v = safe_eval(f, names)
         except Exception:
             continue
         if len(pool) < 4 and distinct(v, [x for x, _ in pool]):
             pool.append((v, False))
-    for m in (1.1, 0.9, 1.25, 0.8):  # pad with perturbations if needed
+    for m in (1.1, 0.9, 1.25, 0.8):
         if len(pool) >= 4:
             break
         v = correct * m
@@ -301,9 +295,9 @@ def pick_topic(topic_choice, adaptive):
     for t in TOPICS:
         s = st.session_state.topic_stats.get(t)
         if not s or s["total"] == 0:
-            weights.append(1.5)  # unexplored topics get a boost
+            weights.append(1.5)
         else:
-            weights.append(0.5 + 2 * (1 - s["correct"] / s["total"]))  # weak topics weigh more
+            weights.append(0.5 + 2 * (1 - s["correct"] / s["total"]))
     return random.choices(TOPICS, weights)[0]
 
 
@@ -323,8 +317,8 @@ def submit(pid):
     xp = 0
     if is_correct:
         xp = DIFFICULTY_XP[p["difficulty"]]
-        xp += 10 if p["verified"] else 0          # verified-puzzle bonus
-        xp += 5 if elapsed < 30 else 0            # speed bonus
+        xp += 10 if p["verified"] else 0
+        xp += 5 if elapsed < 30 else 0
         st.session_state.streak += 1
         st.session_state.best_streak = max(st.session_state.best_streak, st.session_state.streak)
         if p["verified"]:
@@ -385,7 +379,6 @@ def competency_status(stats):
 
 
 def study_plan():
-    """Suggest the weakest topics, with at least 2 attempts each."""
     scored = []
     for topic, s in st.session_state.topic_stats.items():
         if s["total"] >= 2:
@@ -450,9 +443,8 @@ with st.expander("🔌 Test model connection"):
             reply = ask_llm(client, model, "You are a helpful assistant.", "Reply with the single word OK.")
             st.success(f"Connected. Model replied: {reply.strip()[:80]}")
         except Exception as e:
-            st.error(f"{type(e).__name__}: {e}")
+            st.error(f"Connection Error ({type(e).__name__}): {e}")
 
-# Tabs are created here, before any code uses them.
 tab_play, tab_gloss, tab_progress = st.tabs(["🎯 Practice", "📘 Glossary", "📈 Progress"])
 
 # ---- Practice tab ----
@@ -461,150 +453,11 @@ with tab_play:
         topic = pick_topic(topic_choice, st.session_state.adaptive)
         fmt = random.choice(FORMATS[1:]) if fmt_choice == "Random" else fmt_choice
         puzzle, errors = None, []
+        
         with st.status(f"Asking {model} for a {fmt.lower()} puzzle...", expanded=True) as status:
             for attempt in range(1, 4):
                 st.write(f"Attempt {attempt} of 3...")
                 try:
                     puzzle = generate_puzzle(client, model, fmt, topic, difficulty, st.session_state.seen)
                     break
-                except Exception as e:
-                    errors.append(f"Attempt {attempt}: {type(e).__name__}: {e}")
-                    st.write(errors[-1])
-            if puzzle:
-                status.update(label="Puzzle ready", state="complete", expanded=False)
-            else:
-                status.update(label="Could not generate a puzzle", state="error")
-
-        if puzzle:
-            st.session_state.pid += 1
-            puzzle["id"] = st.session_state.pid
-            st.session_state.puzzle = puzzle
-            st.session_state.answered = False
-            st.session_state.start_time = time.time()
-            st.session_state.seen.append(puzzle["question"])
-            for t in puzzle.get("key_terms", []):
-                st.session_state.glossary[t["term"]] = t.get("meaning", "")
-        else:
-            st.error("No puzzle was generated. The details below show why.")
-            for e in errors:
-                st.code(e)
-
-    p = st.session_state.puzzle
-    if p:
-        pid = p["id"]
-        answered = st.session_state.answered
-        badge = "✅ Verified by Python" if p["verified"] else "🤖 AI-checked"
-        st.caption(f"🏢 {p['area']} · {p['topic']} · {p['format']} · {p['difficulty']} · {badge} · "
-                   f"generated by `{p['model']}`")
-        st.markdown(f"### {p['question']}")
-
-        st.radio("Your answer", p["options"], index=None, key=f"choice_{pid}", disabled=answered)
-        if not answered:
-            if st.session_state.get("timed", False):
-                st.caption(f"⏱ {TIME_LIMIT}s limit, checked when you submit")
-            st.button("Submit answer", type="primary",
-                      disabled=st.session_state.get(f"choice_{pid}") is None,
-                      on_click=submit, args=(pid,))
-        else:
-            last = st.session_state.history[-1]
-            correct_text = p["options"][p["answer_index"]]
-            if last["timed_out"]:
-                st.warning(f"Time's up. The answer was: {correct_text}")
-            elif last["correct"]:
-                st.success(f"Correct! +{st.session_state.last_xp} XP")
-            else:
-                st.error(f"Not quite. The answer is: {correct_text}")
-
-            st.info(p["explanation"])
-            if p.get("tip"):
-                st.markdown(f"**💡 Analyst tip:** {p['tip']}")
-            if p.get("market_behaviour"):
-                st.markdown(f"**📰 Why the market or management moves:** {p['market_behaviour']}")
-            if p.get("real_life"):
-                st.markdown(f"**🏠 In real life:** {p['real_life']}")
-            if p.get("reflection"):
-                st.markdown(f"**🤔 Think about it:** {p['reflection']}")
-            st.markdown(f"**🧭 Skill practised:** {p['area']} → *{p['topic']}*")
-            if p.get("key_terms"):
-                with st.expander("🔑 Key terms in this puzzle"):
-                    for t in p["key_terms"]:
-                        st.markdown(f"**{t['term']}**: {t.get('meaning', '')}")
-
-            if pid in st.session_state.explanations:
-                st.markdown(st.session_state.explanations[pid])
-            elif st.button("🧠 Deep dive: how a pro analyst thinks about this"):
-                with st.spinner("Writing a deep dive..."):
-                    st.session_state.explanations[pid] = ask_llm(
-                        client, model,
-                        "You are a patient corporate finance mentor for analysts. Use simple words and explain jargon in brackets. "
-                        "Answer in this order, under 280 words: 1) the core concept in plain English; "
-                        "2) the step-by-step thinking a senior analyst would use when an AI tool raises this issue; "
-                        "3) what to verify before trusting or acting on the AI output; "
-                        "4) how the same idea applies to a personal money decision; "
-                        "5) two common mistakes analysts make and how to avoid them.",
-                        f"Workday area: {p['area']}\nPuzzle: {p['question']}\nCorrect answer: {correct_text}\n"
-                        f"Explanation: {p['explanation']}",
-                    )
-                    st.rerun()
-    else:
-        st.info("Pick your settings in the sidebar and press **New puzzle** to start.")
-
-# ---- Glossary tab ----
-with tab_gloss:
-    gloss = st.session_state.glossary
-    st.subheader("Your finance glossary")
-    if gloss:
-        st.caption(f"{len(gloss)} terms learned so far. Terms are added as you get new puzzles.")
-        query = st.text_input("Search terms", key="gloss_search").strip().lower()
-        for term in sorted(gloss):
-            if query and query not in term.lower() and query not in gloss[term].lower():
-                continue
-            st.markdown(f"**{term}**: {gloss[term]}")
-    else:
-        st.info("Your glossary fills up as you solve puzzles.")
-
-# ---- Progress tab ----
-with tab_progress:
-    st.subheader("Competency by workday area")
-    area_rows = {}
-    for area in WORK_AREAS:
-        s = area_stats(area)
-        if s["total"] > 0:
-            area_rows[area] = round(100 * s["correct"] / s["total"])
-    if area_rows:
-        df = pd.DataFrame({"Accuracy %": area_rows}).sort_values("Accuracy %")
-        st.bar_chart(df)
-    else:
-        st.info("Answer a few puzzles to see your accuracy by workday area.")
-
-    st.subheader("Skill checklist")
-    checklist = []
-    for area, topics in WORK_AREAS.items():
-        for t in topics:
-            s = st.session_state.topic_stats.get(t, {"correct": 0, "total": 0})
-            checklist.append({
-                "Area": area,
-                "Responsibility": t,
-                "Attempts": s["total"],
-                "Accuracy": f"{round(100 * s['correct'] / s['total'])}%" if s["total"] else "-",
-                "Status": competency_status(s),
-            })
-    st.dataframe(pd.DataFrame(checklist), use_container_width=True, hide_index=True)
-
-    st.subheader("Your study plan")
-    plan = study_plan()
-    if plan:
-        st.write("Focus on these responsibilities next. Each one maps to a real task on the analyst's desk:")
-        for acc_t, topic, n in plan:
-            st.markdown(f"- **{topic}** ({TOPIC_AREA[topic]}): {round(acc_t * 100)}% over {n} puzzles. "
-                        "Try Hard difficulty with the Best next action format on this topic.")
-    else:
-        st.info("After at least two puzzles in a responsibility, your weakest areas will appear here.")
-
-    st.subheader("Habits of a strong AI-era analyst")
-    st.markdown(
-        "**Verify before you trust.** Check any AI output against a source record before it reaches a CFO deck. "
-        "**Explain the story.** For every variance, write one sentence on the business driver, not just the number. "
-        "**Stress-test the forecast.** Ask what happens to the answer if interest rates, FX or input costs move. "
-        "**Keep the audit trail.** Note which model, data source and assumption produced each conclusion."
-        )
+                except Exception
