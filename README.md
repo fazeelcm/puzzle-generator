@@ -2,7 +2,7 @@
 
 [![Streamlit App](https://static.streamlit.io/badges/streamlit_badge_black_white.svg)](https://malware-roi-and-decision-matrix-vsyj5nkuhqcwkps5burgq2.streamlit.app/)
 
-> 🌐 **Live Demo:** [Launch Interactive Dashboard](https://puzzle-generator-dmw9nzlqkuykorutuqmt4f.streamlit.app/)
+> 🌐 **Live Demo:** [Launch Puzzle Generator](https://puzzle-generator-dmw9nzlqkuykorutuqmt4f.streamlit.app/)
 > 
 
 An AI-powered practice app that trains corporate finance analysts on the real AI-era workday through puzzles: econciliation, forecasting, scenario analysis, treasury, reporting and governance.
