@@ -1,5 +1,7 @@
 # 📈 Puzzle Generator
 
+**Live app:** <https://puzzle-generator-dmw9nzlqkuykorutuqmt4f.streamlit.app/>
+
 An AI-powered practice app that trains corporate finance analysts on the real AI-era workday through puzzles: econciliation, forecasting, scenario analysis, treasury, reporting and governance.
 
 ## Features
